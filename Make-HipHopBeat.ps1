@@ -43,6 +43,9 @@
 .PARAMETER UseAll
   Forces all available instruments to be used (equivalent to -AddClap -AddBass -AddBrass -AddScratch).
 
+.PARAMETER SkipPlayback
+  Skips audio playback after generating the WAV file. The file will still be saved.
+
 .EXAMPLE
   .\Make-HipHopBeat.ps1 -Bpm 88 -Bars 4 -Swing 0.16
 
@@ -60,10 +63,10 @@
 #>
 [CmdletBinding()]
 param(
-  [ValidateSet('BoomBap','OldSchool','Crunk')] [string]$Style = 'BoomBap',
-  [ValidateRange(60,180)] [int]$Bpm = 0,  # 0 means use style default
-  [ValidateRange(1,64)]  [int]$Bars = 4,
-  [ValidateRange(0.0,0.25)] [double]$Swing = -1.0,  # -1 means use style default
+  [ValidateSet('BoomBap', 'OldSchool', 'Crunk')] [string]$Style = 'BoomBap',
+  [ValidateRange(60, 180)] [int]$Bpm = 0,  # 0 means use style default
+  [ValidateRange(1, 64)]  [int]$Bars = 4,
+  [ValidateRange(0.0, 0.25)] [double]$Swing = -1.0,  # -1 means use style default
   [string]$OutPath,
   [switch]$AddClap,
   [switch]$AddBass,
@@ -71,12 +74,13 @@ param(
   [switch]$AddBrass,
   [switch]$AddScratch,
   [switch]$AddShaker,
-  [switch]$UseAll
+  [switch]$UseAll,
+  [switch]$SkipPlayback
 )
 
 # -------------------- Style presets configuration --------------------
 # Apply style presets if Bpm or Swing weren't explicitly set
-switch($Style) {
+switch ($Style) {
   'BoomBap' {
     if ($Bpm -eq 0) { $Bpm = 92 }
     if ($Swing -eq -1.0) { $Swing = 0.16 }
@@ -129,7 +133,8 @@ if ($UseAll) {
   $UseBrass = $true
   $UseScratch = $true
   $UseShaker = $true
-} else {
+}
+else {
   # Merge individual switches with style presets (switches take priority)
   $UseClap = $AddClap -or $StyleClap
   $UseBass = $AddBass -or $StyleBass -or $Use808 -or $Style808
@@ -243,89 +248,90 @@ function Add-MixInto {
 
 # -------------------- Stereo mixing functions --------------------
 function Add-MixIntoStereo {
-    param(
-        [double[]]$L, [double[]]$R,
-        [double[]]$Src, [int]$StartIndex,
-        [double]$Gain = 1.0, [double]$Pan = 0.0
-    )
-    # Equal-power panning: -1 = hard left, 0 = center, +1 = hard right
-    $pl = [Math]::Sqrt(0.5 * (1 - $Pan))
-    $pr = [Math]::Sqrt(0.5 * (1 + $Pan))
+  param(
+    [double[]]$L, [double[]]$R,
+    [double[]]$Src, [int]$StartIndex,
+    [double]$Gain = 1.0, [double]$Pan = 0.0
+  )
+  # Equal-power panning: -1 = hard left, 0 = center, +1 = hard right
+  $pl = [Math]::Sqrt(0.5 * (1 - $Pan))
+  $pr = [Math]::Sqrt(0.5 * (1 + $Pan))
 
-    $n = [Math]::Min($Src.Length, [Math]::Max(0, $L.Length - $StartIndex))
-    for($i=0; $i -lt $n; $i++){
-        $idx = $StartIndex + $i
-        if($idx -ge $L.Length){ break }
-        $L[$idx] += $Gain * $pl * $Src[$i]
-        $R[$idx] += $Gain * $pr * $Src[$i]
-    }
+  $n = [Math]::Min($Src.Length, [Math]::Max(0, $L.Length - $StartIndex))
+  for ($i = 0; $i -lt $n; $i++) {
+    $idx = $StartIndex + $i
+    if ($idx -ge $L.Length) { break }
+    $L[$idx] += $Gain * $pl * $Src[$i]
+    $R[$idx] += $Gain * $pr * $Src[$i]
+  }
 }
 
 # Haas effect for width (subtle L/R delay)
 function Add-HaasStereo {
-    param(
-        [double[]]$L, [double[]]$R,
-        [double[]]$Src, [int]$StartIndex,
-        [double]$Gain = 1.0, [double]$Pan = 0.0, [double]$HaasMs = 9
-    )
-    $haas = [int]($HaasMs / 1000.0 * $SampleRate)
+  param(
+    [double[]]$L, [double[]]$R,
+    [double[]]$Src, [int]$StartIndex,
+    [double]$Gain = 1.0, [double]$Pan = 0.0, [double]$HaasMs = 9
+  )
+  $haas = [int]($HaasMs / 1000.0 * $SampleRate)
 
-    for($i=0; $i -lt $Src.Length; $i++){
-        $idx = $StartIndex + $i
-        if($idx -ge $L.Length){ break }
+  for ($i = 0; $i -lt $Src.Length; $i++) {
+    $idx = $StartIndex + $i
+    if ($idx -ge $L.Length) { break }
 
-        # Left on-time, right delayed (or vice versa based on pan)
-        if ($Pan -le 0) {
-            # Pan left: left on-time, right delayed
-            $L[$idx] += $Gain * $Src[$i]
-            $rIdx = $idx + $haas
-            if($rIdx -lt $R.Length){ $R[$rIdx] += $Gain * $Src[$i] }
-        } else {
-            # Pan right: right on-time, left delayed
-            $R[$idx] += $Gain * $Src[$i]
-            $lIdx = $idx + $haas
-            if($lIdx -lt $L.Length){ $L[$lIdx] += $Gain * $Src[$i] }
-        }
+    # Left on-time, right delayed (or vice versa based on pan)
+    if ($Pan -le 0) {
+      # Pan left: left on-time, right delayed
+      $L[$idx] += $Gain * $Src[$i]
+      $rIdx = $idx + $haas
+      if ($rIdx -lt $R.Length) { $R[$rIdx] += $Gain * $Src[$i] }
     }
+    else {
+      # Pan right: right on-time, left delayed
+      $R[$idx] += $Gain * $Src[$i]
+      $lIdx = $idx + $haas
+      if ($lIdx -lt $L.Length) { $L[$lIdx] += $Gain * $Src[$i] }
+    }
+  }
 }
 
 # Stereo slapback send for space
 function Add-SlapbackStereo {
-    param([double[]]$L,[double[]]$R,[double[]]$Src,[int]$Start,[double]$Ms=85,[double]$Gain=0.18,[double]$Pan=0.0)
-    $d=[int]($Ms/1000.0*$SampleRate)
-    $pl = [Math]::Sqrt(0.5*(1 - $Pan))
-    $pr = [Math]::Sqrt(0.5*(1 + $Pan))
+  param([double[]]$L, [double[]]$R, [double[]]$Src, [int]$Start, [double]$Ms = 85, [double]$Gain = 0.18, [double]$Pan = 0.0)
+  $d = [int]($Ms / 1000.0 * $SampleRate)
+  $pl = [Math]::Sqrt(0.5 * (1 - $Pan))
+  $pr = [Math]::Sqrt(0.5 * (1 + $Pan))
 
-    for($i=0;$i -lt $Src.Length;$i++){
-        $idx = $Start + $d + $i
-        if($idx -ge $L.Length){ break }
-        # Mirror-ish: send more to the opposite side of the dry
-        $L[$idx] += $Gain * $pr * $Src[$i]
-        $R[$idx] += $Gain * $pl * $Src[$i]
-    }
+  for ($i = 0; $i -lt $Src.Length; $i++) {
+    $idx = $Start + $d + $i
+    if ($idx -ge $L.Length) { break }
+    # Mirror-ish: send more to the opposite side of the dry
+    $L[$idx] += $Gain * $pr * $Src[$i]
+    $R[$idx] += $Gain * $pl * $Src[$i]
+  }
 }
 
 # Pan wobble for shakers (simulates hand movement)
 function Add-WobblePan {
-    param(
-        [double[]]$L, [double[]]$R,
-        [double[]]$Src, [int]$StartIndex,
-        [double]$Gain = 1.0, [double]$BasePan = 0.0, [double]$Depth = 0.08, [double]$RateHz = 0.35
-    )
-    $randomPhase = Get-Random -Minimum 0.0 -Maximum 6.28
+  param(
+    [double[]]$L, [double[]]$R,
+    [double[]]$Src, [int]$StartIndex,
+    [double]$Gain = 1.0, [double]$BasePan = 0.0, [double]$Depth = 0.08, [double]$RateHz = 0.35
+  )
+  $randomPhase = Get-Random -Minimum 0.0 -Maximum 6.28
 
-    for($i=0; $i -lt $Src.Length; $i++){
-        $t = ($i / $SampleRate)
-        $pan = $BasePan + $Depth * [Math]::Sin(2*[Math]::PI*$RateHz*$t + $randomPhase)
+  for ($i = 0; $i -lt $Src.Length; $i++) {
+    $t = ($i / $SampleRate)
+    $pan = $BasePan + $Depth * [Math]::Sin(2 * [Math]::PI * $RateHz * $t + $randomPhase)
 
-        # Equal-power panning per sample
-        $pl = [Math]::Sqrt(0.5*(1 - $pan))
-        $pr = [Math]::Sqrt(0.5*(1 + $pan))
-        $idx = $StartIndex + $i
-        if($idx -ge $L.Length){ break }
-        $L[$idx] += $Gain * $pl * $Src[$i]
-        $R[$idx] += $Gain * $pr * $Src[$i]
-    }
+    # Equal-power panning per sample
+    $pl = [Math]::Sqrt(0.5 * (1 - $pan))
+    $pr = [Math]::Sqrt(0.5 * (1 + $pan))
+    $idx = $StartIndex + $i
+    if ($idx -ge $L.Length) { break }
+    $L[$idx] += $Gain * $pl * $Src[$i]
+    $R[$idx] += $Gain * $pr * $Src[$i]
+  }
 }
 
 function Set-NormalizedLevel {
@@ -334,7 +340,7 @@ function Set-NormalizedLevel {
   foreach ($s in $Samples) { $a = [Math]::Abs($s); if ($a -gt $max) { $max = $a } }
   if ($max -gt 0) {
     $g = $Target / $max
-    for ($i=0; $i -lt $Samples.Length; $i++) { $Samples[$i] *= $g }
+    for ($i = 0; $i -lt $Samples.Length; $i++) { $Samples[$i] *= $g }
   }
 }
 
@@ -343,22 +349,22 @@ function Set-HighpassFilter {
   param([double[]]$x, [double]$alpha = 0.98)
   $y = New-Object double[] $x.Length
   $prev = 0.0
-  for ($i=0; $i -lt $x.Length; $i++) {
-    $y[$i] = $alpha * ($y[[Math]::Max(0,$i-1)]) + $x[$i] - $prev
+  for ($i = 0; $i -lt $x.Length; $i++) {
+    $y[$i] = $alpha * ($y[[Math]::Max(0, $i - 1)]) + $x[$i] - $prev
     $prev = $x[$i]
   }
-  return ,$y
+  return , $y
 }
 
 # Exponential decay envelope
 function New-ExponentialEnvelope {
   param([int]$Len, [double]$tau) # tau in seconds
   $env = New-Object double[] $Len
-  for ($i=0; $i -lt $Len; $i++) {
+  for ($i = 0; $i -lt $Len; $i++) {
     $t = $i / $SampleRate
     $env[$i] = [Math]::Exp(-$t / $tau)
   }
-  return ,$env
+  return , $env
 }
 
 # Multiply arrays
@@ -366,8 +372,8 @@ function Invoke-ArrayMultiply {
   param([double[]]$a, [double[]]$b)
   $n = [Math]::Min($a.Length, $b.Length)
   $out = New-Object double[] $n
-  for ($i=0; $i -lt $n; $i++) { $out[$i] = $a[$i] * $b[$i] }
-  return ,$out
+  for ($i = 0; $i -lt $n; $i++) { $out[$i] = $a[$i] * $b[$i] }
+  return , $out
 }
 
 # -------------------- Drum Synths --------------------
@@ -376,7 +382,7 @@ function New-SynthKick {
   $len = [int]($LengthSec * $SampleRate)
   $out = New-Object double[] $len
   $phase = 0.0
-  for ($i=0; $i -lt $len; $i++) {
+  for ($i = 0; $i -lt $len; $i++) {
     $t = $i / $SampleRate
     # exponential freq sweep f(t) = f1 + (f0 - f1)*exp(-t*k)
     $k = 8.0
@@ -388,8 +394,8 @@ function New-SynthKick {
   $env = New-ExponentialEnvelope -Len $len -tau 0.12
   $out = Invoke-ArrayMultiply $out $env
   # subtle saturation
-  for ($i=0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(2.5 * $out[$i]) }
-  return ,$out
+  for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(2.5 * $out[$i]) }
+  return , $out
 }
 
 function New-SynthSnare {
@@ -399,44 +405,44 @@ function New-SynthSnare {
   $noise = New-Object double[] $len
   $phase = 0.0
   $f = 190.0
-  for ($i=0; $i -lt $len; $i++) {
+  for ($i = 0; $i -lt $len; $i++) {
     $phase += (2.0 * [Math]::PI * $f) / $SampleRate
     $tone[$i] = [Math]::Sin($phase)
     $noise[$i] = ($rand.NextDouble() * 2.0 - 1.0)
   }
-  $toneEnv  = New-ExponentialEnvelope -Len $len -tau 0.08
+  $toneEnv = New-ExponentialEnvelope -Len $len -tau 0.08
   $noiseEnv = New-ExponentialEnvelope -Len $len -tau 0.05
-  $tone  = Invoke-ArrayMultiply $tone  $toneEnv
+  $tone = Invoke-ArrayMultiply $tone  $toneEnv
   $noise = Invoke-ArrayMultiply $noise $noiseEnv
   $noise = Set-HighpassFilter $noise 0.995
   $out = New-Object double[] $len
-  for ($i=0; $i -lt $len; $i++) { $out[$i] = 0.4*$tone[$i] + 0.9*$noise[$i] }
-  for ($i=0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(2.0 * $out[$i]) }
-  return ,$out
+  for ($i = 0; $i -lt $len; $i++) { $out[$i] = 0.4 * $tone[$i] + 0.9 * $noise[$i] }
+  for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(2.0 * $out[$i]) }
+  return , $out
 }
 
 function New-SynthHat {
   param([double]$LengthSec = 0.12)
   $len = [int]($LengthSec * $SampleRate)
   $noise = New-Object double[] $len
-  for ($i=0; $i -lt $len; $i++) { $noise[$i] = ($rand.NextDouble() * 2.0 - 1.0) }
+  for ($i = 0; $i -lt $len; $i++) { $noise[$i] = ($rand.NextDouble() * 2.0 - 1.0) }
   $noise = Set-HighpassFilter $noise 0.995
   $env = New-ExponentialEnvelope -Len $len -tau 0.03
   $out = Invoke-ArrayMultiply $noise $env
-  for ($i=0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(1.6 * $out[$i]) }
-  return ,$out
+  for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(1.6 * $out[$i]) }
+  return , $out
 }
 
 function New-SynthOpenHat {
   param([double]$LengthSec = 0.30)
   $len = [int]($LengthSec * $SampleRate)
   $noise = New-Object double[] $len
-  for ($i=0; $i -lt $len; $i++) { $noise[$i] = ($rand.NextDouble() * 2.0 - 1.0) }
+  for ($i = 0; $i -lt $len; $i++) { $noise[$i] = ($rand.NextDouble() * 2.0 - 1.0) }
   $noise = Set-HighpassFilter $noise 0.997  # Even brighter than closed hat
   $env = New-ExponentialEnvelope -Len $len -tau 0.12  # Longer sustain for open sound
   $out = Invoke-ArrayMultiply $noise $env
-  for ($i=0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(1.4 * $out[$i]) }
-  return ,$out
+  for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(1.4 * $out[$i]) }
+  return , $out
 }
 
 function New-SynthClap {
@@ -447,38 +453,38 @@ function New-SynthClap {
   $burst = New-Object double[] $len
   $delSamp = [int](0.015 * $SampleRate)
   $noiseBurst = New-Object double[] $len
-  for ($i=0; $i -lt $len; $i++) { $noiseBurst[$i] = ($rand.NextDouble()*2-1.0) }
+  for ($i = 0; $i -lt $len; $i++) { $noiseBurst[$i] = ($rand.NextDouble() * 2 - 1.0) }
   $noiseBurst = Set-HighpassFilter $noiseBurst 0.997
   $env = New-ExponentialEnvelope -Len $len -tau 0.06
   $noiseBurst = Invoke-ArrayMultiply $noiseBurst $env
 
   Add-MixInto -Dest $burst -Src $noiseBurst -StartIndex 0     -Gain 0.9
   Add-MixInto -Dest $burst -Src $noiseBurst -StartIndex $delSamp     -Gain 0.6
-  Add-MixInto -Dest $burst -Src $noiseBurst -StartIndex (2*$delSamp) -Gain 0.4
+  Add-MixInto -Dest $burst -Src $noiseBurst -StartIndex (2 * $delSamp) -Gain 0.4
 
   $out = New-Object double[] $len
-  for ($i=0; $i -lt $len; $i++) { $out[$i] = 0.6*$burst[$i] }
-  for ($i=0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(1.8 * $out[$i]) }
-  return ,$out
+  for ($i = 0; $i -lt $len; $i++) { $out[$i] = 0.6 * $burst[$i] }
+  for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(1.8 * $out[$i]) }
+  return , $out
 }
 
 function New-SynthShaker {
-  param([double]$LenSec=0.12)
-  $len=[int]($LenSec*$SampleRate)
+  param([double]$LenSec = 0.12)
+  $len = [int]($LenSec * $SampleRate)
   $out = New-Object double[] $len
   $rand = New-Object System.Random
 
-  for($i=0;$i -lt $len;$i++){
+  for ($i = 0; $i -lt $len; $i++) {
     # white noise burst
-    $n = 2*$rand.NextDouble()-1
+    $n = 2 * $rand.NextDouble() - 1
     # band-pass effect (shakers live around 2–8kHz)
-    $bp = $n - 0.98*$(if ($i -gt 0) { $out[$i-1] } else { 0 })
+    $bp = $n - 0.98 * $(if ($i -gt 0) { $out[$i - 1] } else { 0 })
     # envelope (fast in, medium out)
-    $env = [Math]::Exp(-15.0*($i/$SampleRate))
+    $env = [Math]::Exp(-15.0 * ($i / $SampleRate))
     $out[$i] = [Math]::Tanh(1.6 * $bp * $env)
   }
 
-  ,$out
+  , $out
 }
 
 # -------------------- New Instruments --------------------
@@ -488,7 +494,7 @@ function New-SynthBass {
   $out = New-Object double[] $len
   $phase = 0.0
 
-  for ($i=0; $i -lt $len; $i++) {
+  for ($i = 0; $i -lt $len; $i++) {
     $t = $i / $SampleRate
     # Sub bass with slight frequency modulation for warmth
     $vibrato = 1.0 + 0.02 * [Math]::Sin(6.0 * 2.0 * [Math]::PI * $t)
@@ -507,8 +513,8 @@ function New-SynthBass {
   $out = Invoke-ArrayMultiply $out $env
 
   # Soft saturation
-  for ($i=0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(1.5 * $out[$i]) }
-  return ,$out
+  for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(1.5 * $out[$i]) }
+  return , $out
 }
 
 function New-Synth808 {
@@ -528,7 +534,7 @@ function New-Synth808 {
 
   # Heavy saturation for that 808 character
   for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh($Drive * $out[$i]) }
-  return ,$out
+  return , $out
 }
 
 function New-SynthBrass {
@@ -537,12 +543,12 @@ function New-SynthBrass {
   $out = New-Object double[] $len
   $phase = 0.0
 
-  for ($i=0; $i -lt $len; $i++) {
+  for ($i = 0; $i -lt $len; $i++) {
     $phase += (2.0 * [Math]::PI * $frequency) / $SampleRate
 
     # Sawtooth wave with harmonics for brass-like sound
     $saw = 0.0
-    for ($h=1; $h -le 8; $h++) {
+    for ($h = 1; $h -le 8; $h++) {
       $harmonic = [Math]::Sin($phase * $h) / $h
       $saw += $harmonic
     }
@@ -552,14 +558,14 @@ function New-SynthBrass {
   # Sharp attack, quick decay envelope
   $env = New-ExponentialEnvelope -Len $len -tau 0.08
   # Add attack punch
-  for ($i=0; $i -lt [Math]::Min(100, $len); $i++) {
+  for ($i = 0; $i -lt [Math]::Min(100, $len); $i++) {
     $env[$i] *= (1.0 + 2.0 * [Math]::Exp(-$i * 0.05))
   }
   $out = Invoke-ArrayMultiply $out $env
 
   # Hard saturation for punch
-  for ($i=0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(3.0 * $out[$i]) }
-  return ,$out
+  for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(3.0 * $out[$i]) }
+  return , $out
 }
 
 function New-SynthScratch {
@@ -568,7 +574,7 @@ function New-SynthScratch {
   $out = New-Object double[] $len
 
   # Create scratch by modulating noise with a quick frequency sweep
-  for ($i=0; $i -lt $len; $i++) {
+  for ($i = 0; $i -lt $len; $i++) {
     $t = $i / $SampleRate
     $noise = ($rand.NextDouble() * 2.0 - 1.0)
 
@@ -588,98 +594,98 @@ function New-SynthScratch {
   $out = Invoke-ArrayMultiply $out $env
 
   # Heavy saturation for gritty sound
-  for ($i=0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(4.0 * $out[$i]) }
-  return ,$out
+  for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(4.0 * $out[$i]) }
+  return , $out
 }
 
 # Additional scratch variation with crossfader gate effect
 function New-SynthScratchWicky {
-  param([double]$LenSec=0.25)
-  $len=[int]($LenSec*$SampleRate)
-  $out=New-Object double[] $len
-  $rand=New-Object System.Random
-  $phase=0.0
-  for($i=0;$i -lt $len;$i++){
-    $t=$i/$SampleRate
+  param([double]$LenSec = 0.25)
+  $len = [int]($LenSec * $SampleRate)
+  $out = New-Object double[] $len
+  $rand = New-Object System.Random
+  $phase = 0.0
+  for ($i = 0; $i -lt $len; $i++) {
+    $t = $i / $SampleRate
     # varispeed sweep up then down
-    $f = (600 + 1800*[Math]::Sin(2*[Math]::PI*3.0*$t))
-    $phase += (2*[Math]::PI*$f)/$SampleRate
+    $f = (600 + 1800 * [Math]::Sin(2 * [Math]::PI * 3.0 * $t))
+    $phase += (2 * [Math]::PI * $f) / $SampleRate
     # tone+noise mix
-    $tone = 0.5*[Math]::Sin($phase)
-    $noi  = 0.5*(2*$rand.NextDouble()-1)
-    $sig  = $tone + $noi
+    $tone = 0.5 * [Math]::Sin($phase)
+    $noi = 0.5 * (2 * $rand.NextDouble() - 1)
+    $sig = $tone + $noi
     # crossfader gate (square LFO ~ 12 Hz)
-    $gate = if (([Math]::Sin(2*[Math]::PI*12.0*$t) -ge 0)) { 1.0 } else { 0.0 }
-    $env  = [Math]::Exp(-3.2*$t)
+    $gate = if (([Math]::Sin(2 * [Math]::PI * 12.0 * $t) -ge 0)) { 1.0 } else { 0.0 }
+    $env = [Math]::Exp(-3.2 * $t)
     $out[$i] = [Math]::Tanh(1.6 * $sig * $gate * $env)
   }
-  ,$out
+  , $out
 }
 
 # Chirp scratch - quick high-to-low frequency sweep
 function New-SynthScratchChirp {
-  param([double]$LenSec=0.18)
-  $len=[int]($LenSec*$SampleRate)
-  $out=New-Object double[] $len
-  $phase=0.0
+  param([double]$LenSec = 0.18)
+  $len = [int]($LenSec * $SampleRate)
+  $out = New-Object double[] $len
+  $phase = 0.0
 
-  for($i=0;$i -lt $len;$i++){
-    $t=$i/$SampleRate
+  for ($i = 0; $i -lt $len; $i++) {
+    $t = $i / $SampleRate
     # Exponential frequency sweep from high to low
-    $f = 2000 * [Math]::Exp(-8.0*$t) + 100
-    $phase += (2*[Math]::PI*$f)/$SampleRate
+    $f = 2000 * [Math]::Exp(-8.0 * $t) + 100
+    $phase += (2 * [Math]::PI * $f) / $SampleRate
 
     # Mix of tone and filtered noise
     $tone = [Math]::Sin($phase)
-    $noise = (2*$rand.NextDouble()-1) * 0.3
+    $noise = (2 * $rand.NextDouble() - 1) * 0.3
     $sig = $tone + $noise
 
     # Sharp attack, quick decay
-    $env = [Math]::Exp(-12.0*$t)
+    $env = [Math]::Exp(-12.0 * $t)
     $out[$i] = [Math]::Tanh(2.0 * $sig * $env)
   }
-  ,$out
+  , $out
 }
 
 # Reverse scratch - low-to-high sweep with stutter
 function New-SynthScratchReverse {
-  param([double]$LenSec=0.22)
-  $len=[int]($LenSec*$SampleRate)
-  $out=New-Object double[] $len
-  $phase=0.0
+  param([double]$LenSec = 0.22)
+  $len = [int]($LenSec * $SampleRate)
+  $out = New-Object double[] $len
+  $phase = 0.0
 
-  for($i=0;$i -lt $len;$i++){
-    $t=$i/$SampleRate
+  for ($i = 0; $i -lt $len; $i++) {
+    $t = $i / $SampleRate
     # Rising frequency with wobble
-    $f = 150 + 1200*$t + 300*[Math]::Sin(2*[Math]::PI*8.0*$t)
-    $phase += (2*[Math]::PI*$f)/$SampleRate
+    $f = 150 + 1200 * $t + 300 * [Math]::Sin(2 * [Math]::PI * 8.0 * $t)
+    $phase += (2 * [Math]::PI * $f) / $SampleRate
 
     # Stutter gate effect
-    $stutter = if (([Math]::Sin(2*[Math]::PI*20.0*$t) -gt -0.3)) { 1.0 } else { 0.2 }
-    $sig = [Math]::Sin($phase) + 0.2*(2*$rand.NextDouble()-1)
+    $stutter = if (([Math]::Sin(2 * [Math]::PI * 20.0 * $t) -gt -0.3)) { 1.0 } else { 0.2 }
+    $sig = [Math]::Sin($phase) + 0.2 * (2 * $rand.NextDouble() - 1)
 
-    $env = [Math]::Exp(-4.0*$t)
+    $env = [Math]::Exp(-4.0 * $t)
     $out[$i] = [Math]::Tanh(1.8 * $sig * $stutter * $env)
   }
-  ,$out
+  , $out
 }
 
 # -------------------- Sequence pattern --------------------
 # 16-step pattern (4/4, 16ths). 1 = hit, 0 = rest.
 # Style-specific patterns for different hip-hop genres
 
-switch($Style) {
+switch ($Style) {
   'BoomBap' {
     # Classic 90s groove - moderate complexity
-    $kick  = @(1,0,0,0, 0,1,0,0, 0,0,0,1, 0,0,1,0)  # "1, e of 2, a of 3"
-    $snare = @(0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0)  # on 2 and 4
-    $hat   = @(1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0)  # steady 8ths
+    $kick = @(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0)  # "1, e of 2, a of 3"
+    $snare = @(0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0)  # on 2 and 4
+    $hat = @(1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0)  # steady 8ths
     $hat[3] = 1; $hat[7] = 1; $hat[11] = 1; $hat[15] = 1  # extra 16th notes
-    $openHat = @(0,0,0,0, 0,0,1,0, 0,0,0,0, 0,0,0,1)  # opens on "a of 2" and "a of 4"
-    $bass   = @(1,0,0,0, 0,0,0,1, 0,0,1,0, 0,0,0,1)
-    $brass  = @(0,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,0,0)  # brass stab on 3
-    $scratch= @(0,0,0,1, 0,0,0,0, 0,0,0,1, 0,0,0,0)  # scratch on offbeats
-    $shaker = @(1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0)  # steady 8ths for boom bap texture
+    $openHat = @(0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1)  # opens on "a of 2" and "a of 4"
+    $bass = @(1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1)
+    $brass = @(0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0)  # brass stab on 3
+    $scratch = @(0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0)  # scratch on offbeats
+    $shaker = @(1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0)  # steady 8ths for boom bap texture
 
     # Pan configuration for classic console feel
     $KickPan = 0.0; $SnarePan = 0.0; $BassPan = 0.0  # Anchor the center
@@ -693,14 +699,14 @@ switch($Style) {
   }
   'OldSchool' {
     # 80s breakbeat style - more complex, faster feel
-    $kick  = @(1,0,0,0, 1,0,0,0, 0,0,1,0, 0,1,0,0)  # More kicks for breakbeat feel
-    $snare = @(0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0)  # classic backbeat
-    $hat   = @(1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1)  # dense 16ths
-    $openHat = @(0,0,0,0, 0,0,0,1, 0,0,0,0, 0,0,0,0)  # minimal opens
-    $bass   = @(1,0,0,1, 0,0,1,0, 1,0,0,1, 0,0,0,0)  # busier bassline
-    $brass  = @(0,0,1,0, 0,0,1,0, 0,0,1,0, 0,0,1,0)  # regular brass hits
-    $scratch= @(0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0)  # no scratches in old school
-    $shaker = @(1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1)  # steady 16ths for old school texture
+    $kick = @(1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0)  # More kicks for breakbeat feel
+    $snare = @(0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0)  # classic backbeat
+    $hat = @(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1)  # dense 16ths
+    $openHat = @(0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0)  # minimal opens
+    $bass = @(1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0)  # busier bassline
+    $brass = @(0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0)  # regular brass hits
+    $scratch = @(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)  # no scratches in old school
+    $shaker = @(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1)  # steady 16ths for old school texture
 
     # Tighter stereo field for old school
     $KickPan = 0.0; $SnarePan = 0.0; $BassPan = 0.0
@@ -714,16 +720,16 @@ switch($Style) {
   }
   'Crunk' {
     # Heavy, slow, minimal - emphasis on low end
-    $kick  = @(1,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,0,0)  # Simple, heavy kicks
-    $snare = @(0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0)  # backbeat only
-    $hat   = @(1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0)  # base 8ths pattern
+    $kick = @(1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0)  # Simple, heavy kicks
+    $snare = @(0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0)  # backbeat only
+    $hat = @(1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0)  # base 8ths pattern
     # Dense 16ths with occasional 32nd rolls added later in rendering
     $hat[1] = 1; $hat[3] = 1; $hat[9] = 1; $hat[11] = 1
-    $openHat = @(0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,1,0)  # rare opens
-    $bass   = @(1,0,0,0, 0,0,1,0, 1,0,0,0, 0,0,1,0)  # heavy 808 pattern
-    $brass  = @(0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0)  # no brass in crunk
-    $scratch= @(0,0,0,0, 0,0,0,1, 0,0,0,0, 0,0,0,1)  # occasional scratches
-    $shaker = @(0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0)  # no shaker in crunk - too minimal
+    $openHat = @(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0)  # rare opens
+    $bass = @(1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0)  # heavy 808 pattern
+    $brass = @(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)  # no brass in crunk
+    $scratch = @(0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1)  # occasional scratches
+    $shaker = @(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)  # no shaker in crunk - too minimal
 
     # Moderate width - keep 808s centered for power
     $KickPan = 0.0; $SnarePan = 0.0; $BassPan = 0.0  # 808 bass must stay centered
@@ -804,15 +810,16 @@ if ($UseBass) {
     $bassFreqs = @(41, 46, 55, 65, 73)  # Roughly E1, F#1, A1, C2, D2
     $bassVariations = @()
     foreach ($freq in $bassFreqs) {
-      $bassVariations += ,(New-Synth808 -LenSec 0.7 -f0 $freq -Drive 1.3)
+      $bassVariations += , (New-Synth808 -LenSec 0.7 -f0 $freq -Drive 1.3)
     }
-  } else {
+  }
+  else {
     Write-Host "🎸 Laying down the bass foundation..." -ForegroundColor DarkGreen
     # Regular bass frequencies
     $bassFreqs = @(65, 73, 82, 98, 110)  # Roughly C2, D2, E2, G2, A2
     $bassVariations = @()
     foreach ($freq in $bassFreqs) {
-      $bassVariations += ,(New-SynthBass -LengthSec 0.45 -frequency $freq)
+      $bassVariations += , (New-SynthBass -LengthSec 0.45 -frequency $freq)
     }
   }
 }
@@ -824,7 +831,7 @@ if ($UseBrass) {
   Write-Host "🎺 Heating up brass stabs..." -ForegroundColor Yellow
   $brassVariations = @()
   foreach ($freq in $brassFreqs) {
-    $brassVariations += ,(New-SynthBrass -LengthSec 0.12 -frequency $freq)
+    $brassVariations += , (New-SynthBrass -LengthSec 0.12 -frequency $freq)
   }
 }
 
@@ -899,16 +906,18 @@ Write-Host "`n🎚️ MIXING IT DOWN..." -ForegroundColor Cyan
 Write-Host "🔄 Sequencing $Bars bars with $Style groove..." -ForegroundColor Green
 Write-Host "🎭 Applying stereo magic and pan positions..." -ForegroundColor Yellow
 
-for ($bar=0; $bar -lt $Bars; $bar++) {
+for ($bar = 0; $bar -lt $Bars; $bar++) {
   if ($bar -eq 0) {
     Write-Host "🎵 Bar 1: Dropping the beat..." -ForegroundColor DarkGreen
-  } elseif ($bar -eq [Math]::Floor($Bars/2)) {
+  }
+  elseif ($bar -eq [Math]::Floor($Bars / 2)) {
     Write-Host "🔥 Halfway through - keeping that energy..." -ForegroundColor DarkYellow
-  } elseif ($bar -eq ($Bars-1)) {
+  }
+  elseif ($bar -eq ($Bars - 1)) {
     Write-Host "🏁 Final bar - bringing it home..." -ForegroundColor DarkRed
   }
 
-  for ($step=0; $step -lt 16; $step++) {
+  for ($step = 0; $step -lt 16; $step++) {
     # Calculate exact position within the bar, then add bar offset
     $stepPositionInBar = $step * $exactSamplesPerStep
 
@@ -928,7 +937,8 @@ for ($bar=0; $bar -lt $Bars; $bar++) {
       # Duck kick when 808 bass hits at same time to avoid mud
       if ($Use808 -and $bass[$step] -eq 1) {
         Add-MixIntoStereo -L $mixL -R $mixR -Src $kickBuf -StartIndex $start -Gain 0.65 -Pan $KickPan  # Ducked
-      } else {
+      }
+      else {
         Add-MixIntoStereo -L $mixL -R $mixR -Src $kickBuf -StartIndex $start -Gain 0.95 -Pan $KickPan  # Normal
       }
     }
@@ -945,7 +955,7 @@ for ($bar=0; $bar -lt $Bars; $bar++) {
       if ($UseClap -and $clapVariations.Length -gt 0) {
         $clapBuf = $clapVariations[$clapVariationMap[$step]]
         # Clap alternating sides for width
-        $clapPan = if ((($bar + $step) % 2 -eq 0)) { -$ClapAlt } else { $ClapAlt }
+        $clapPan = if ((($bar + $step) % 2 -eq 0)) { - $ClapAlt } else { $ClapAlt }
         Add-MixIntoStereo -L $mixL -R $mixR -Src $clapBuf -StartIndex $start -Gain 0.65 -Pan $clapPan
       }
     }
@@ -966,7 +976,8 @@ for ($bar=0; $bar -lt $Bars; $bar++) {
       # Use Haas effect for width if enabled by style
       if ($UseHaas) {
         Add-HaasStereo -L $mixL -R $mixR -Src $hatBuf -StartIndex $start -Gain 0.35 -Pan $HatPan -HaasMs $HaasMs
-      } else {
+      }
+      else {
         Add-MixIntoStereo -L $mixL -R $mixR -Src $hatBuf -StartIndex $start -Gain 0.35 -Pan $HatPan
       }
 
@@ -976,7 +987,7 @@ for ($bar=0; $bar -lt $Bars; $bar++) {
         $stepSamp = $exactSamplesPerStep
         $maxJit = [int]($stepSamp * 0.02)  # Small timing jitter
         0..3 | ForEach-Object {
-          $rollStart = $start + [int]($_ * ($stepSamp/4))  # 32nd notes = quarter of 16th
+          $rollStart = $start + [int]($_ * ($stepSamp / 4))  # 32nd notes = quarter of 16th
           if ($rollStart -lt $mixL.Length) {
             $rollGain = 0.15 + 0.10 * $_  # Crescendo effect
             $jitter = Get-Random -Minimum (-$maxJit) -Maximum $maxJit
@@ -1016,19 +1027,23 @@ for ($bar=0; $bar -lt $Bars; $bar++) {
         $scratchChoice = if ((Get-Random -Maximum 2) -eq 0) {
           # 50% chance for crossfader effects (wicky variations)
           Get-Random -Minimum 3 -Maximum 5
-        } else {
+        }
+        else {
           # 50% chance for reverse scratches
           Get-Random -Minimum 7 -Maximum 9
         }
-      } elseif (($step % 4) -eq 2) {
+      }
+      elseif (($step % 4) -eq 2) {
         # On the "e" of beats - prefer quick chirps
         $scratchChoice = Get-Random -Minimum 5 -Maximum 7
-      } else {
+      }
+      else {
         # General scratches - mix of everything with bias toward shorter ones
         $scratchChoice = if ((Get-Random -Maximum 4) -eq 0) {
           # 25% chance for any variation
           Get-Random -Maximum $scratchVariations.Length
-        } else {
+        }
+        else {
           # 75% chance for standard scratches (first 3 are original types)
           Get-Random -Maximum 3
         }
@@ -1058,7 +1073,7 @@ Write-Host "`n🎛️ FINAL MIXDOWN PROCESS..." -ForegroundColor Magenta
 Write-Host "🔧 Applying master bus compression (tanh saturation)..." -ForegroundColor DarkYellow
 
 # Gentle master bus limiting via tanh, then normalize both channels
-for ($i=0; $i -lt $mixL.Length; $i++) {
+for ($i = 0; $i -lt $mixL.Length; $i++) {
   $mixL[$i] = [Math]::Tanh(1.2 * $mixL[$i])
   $mixR[$i] = [Math]::Tanh(1.2 * $mixR[$i])
 }
@@ -1067,7 +1082,7 @@ Write-Host "📊 Analyzing peaks and normalizing stereo field..." -ForegroundCol
 
 # Normalize stereo - find peak across both channels
 $maxPeak = 0.0
-for ($i=0; $i -lt $mixL.Length; $i++) {
+for ($i = 0; $i -lt $mixL.Length; $i++) {
   $peakL = [Math]::Abs($mixL[$i])
   $peakR = [Math]::Abs($mixR[$i])
   $peak = [Math]::Max($peakL, $peakR)
@@ -1076,7 +1091,7 @@ for ($i=0; $i -lt $mixL.Length; $i++) {
 
 if ($maxPeak -gt 0) {
   $normGain = 0.95 / $maxPeak
-  for ($i=0; $i -lt $mixL.Length; $i++) {
+  for ($i = 0; $i -lt $mixL.Length; $i++) {
     $mixL[$i] *= $normGain
     $mixR[$i] *= $normGain
   }
@@ -1087,7 +1102,8 @@ if ($maxPeak -gt 0) {
 if (-not $OutPath) {
   $name = "HipHopBeat_${Style}_${Bpm}bpm_${Bars}bars_stereo.wav"
   $OutPath = Join-Path $env:TEMP $name
-} else {
+}
+else {
   # Extract filename from provided path
   $name = Split-Path $OutPath -Leaf
 }
@@ -1106,38 +1122,45 @@ catch {
 }
 
 # Playback with proper resource cleanup
-$player = $null
-try {
-  $player = New-Object System.Media.SoundPlayer $OutPath
-  $player.Load()
+if (-not $SkipPlayback) {
+  $player = $null
+  try {
+    $player = New-Object System.Media.SoundPlayer $OutPath
+    $player.Load()
 
-  Write-Host "`n🎧 PLAYBACK TIME!" -ForegroundColor Green
-  Write-Host "🔊 File saved: $OutPath" -ForegroundColor White
-  Write-Host "🎵 Press any key after listening to exit..." -ForegroundColor DarkGreen
+    Write-Host "`n🎧 PLAYBACK TIME!" -ForegroundColor Green
+    Write-Host "🔊 File saved: $OutPath" -ForegroundColor White
+    Write-Host "🎵 Press any key after listening to exit..." -ForegroundColor DarkGreen
 
-  $player.PlaySync()
+    $player.PlaySync()
 
-  Write-Host "`n✨ THAT'S A WRAP! Beat completed successfully! ✨" -ForegroundColor Magenta
-  Write-Host "🎤 Drop the mic... 🎤" -ForegroundColor Red
-}
-catch {
-  Write-Host "`n❌ Error during playback: $($_.Exception.Message)" -ForegroundColor Red
-  Write-Host "🔊 File still saved successfully: $OutPath" -ForegroundColor Yellow
-}
-finally {
-  # Ensure proper cleanup of audio resources
-  if ($null -ne $player) {
-    try {
-      $player.Stop()
-      $player.Dispose()
-      Write-Host "🧹 Audio player resources cleaned up." -ForegroundColor DarkGray
-    }
-    catch {
-      # Ignore disposal errors - player might already be disposed
-    }
+    Write-Host "`n✨ THAT'S A WRAP! Beat completed successfully! ✨" -ForegroundColor Magenta
+    Write-Host "🎤 Drop the mic... 🎤" -ForegroundColor Red
   }
+  catch {
+    Write-Host "`n❌ Error during playback: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "🔊 File still saved successfully: $OutPath" -ForegroundColor Yellow
+  }
+  finally {
+    # Ensure proper cleanup of audio resources
+    if ($null -ne $player) {
+      try {
+        $player.Stop()
+        $player.Dispose()
+        Write-Host "🧹 Audio player resources cleaned up." -ForegroundColor DarkGray
+      }
+      catch {
+        # Ignore disposal errors - player might already be disposed
+      }
+    }
 
-  # Force garbage collection to release any remaining handles
-  [System.GC]::Collect()
-  [System.GC]::WaitForPendingFinalizers()
+    # Force garbage collection to release any remaining handles
+    [System.GC]::Collect()
+    [System.GC]::WaitForPendingFinalizers()
+  }
+}
+else {
+  Write-Host "`n🔇 Playback skipped as requested." -ForegroundColor Yellow
+  Write-Host "🔊 File saved: $OutPath" -ForegroundColor White
+  Write-Host "✨ Beat generation completed successfully! ✨" -ForegroundColor Magenta
 }
