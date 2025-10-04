@@ -16,8 +16,8 @@
   Swing amount in [0..0.25]. 0.12-0.18 is typical hip-hop feel.
   Swing delays odd 16th steps by (Swing * 16th_duration).
 
-.PARAMETER OutPath
-  Optional path for the rendered WAV. If omitted, a temp file is used.
+.PARAMETER OutputFolder
+  Optional folder path where the rendered WAV will be saved with an auto-generated name. If omitted, the temp folder is used.
 
 .PARAMETER Style
   Hip-hop style preset that configures BPM, swing, and instrument selection.
@@ -46,6 +46,24 @@
 .PARAMETER SkipPlayback
   Skips audio playback after generating the WAV file. The file will still be saved.
 
+.PARAMETER DontMakeSeamless
+  Disables seamless loop processing. By default, all beats are processed into perfect loops.
+
+.PARAMETER TailMs
+  Size of the tail window (ms) for seamless loop detection. Default: 200.
+
+.PARAMETER SearchHeadMs
+  How far into the head to search for loop match (ms). Default: 1500.
+
+.PARAMETER XfadeMs
+  Crossfade length (ms) for seamless loop. Default: 12.
+
+.PARAMETER GridSnapWindowMs
+  Max distance (ms) to nudge loop start to nearest beat boundary. Default: 30.
+
+.PARAMETER BeatsPerBar
+  Time signature beats per bar (e.g., 4 for 4/4, 3 for 3/4). Default: 4.
+
 .EXAMPLE
   .\Make-HipHopBeat.ps1 -Bpm 88 -Bars 4 -Swing 0.16
 
@@ -58,8 +76,15 @@
 .EXAMPLE
   .\Make-HipHopBeat.ps1 -Use808 -Bpm 75 -Swing 0.20
 
+.EXAMPLE
+  .\Make-HipHopBeat.ps1 -Style BoomBap -Bars 4
+
+.EXAMPLE
+  .\Make-HipHopBeat.ps1 -DontMakeSeamless -UseAll -Bpm 95
+
 .NOTES
   All synthesis is in-script: no samples, no external modules.
+  By default, beats are processed into seamless loops. Use -DontMakeSeamless to disable.
 #>
 [CmdletBinding()]
 param(
@@ -67,7 +92,7 @@ param(
   [ValidateRange(60, 180)] [int]$Bpm = 0,  # 0 means use style default
   [ValidateRange(1, 64)]  [int]$Bars = 4,
   [ValidateRange(0.0, 0.25)] [double]$Swing = -1.0,  # -1 means use style default
-  [string]$OutPath,
+  [string]$OutputFolder,
   [switch]$AddClap,
   [switch]$AddBass,
   [switch]$Use808,
@@ -75,7 +100,13 @@ param(
   [switch]$AddScratch,
   [switch]$AddShaker,
   [switch]$UseAll,
-  [switch]$SkipPlayback
+  [switch]$SkipPlayback,
+  [switch]$DontMakeSeamless,
+  [int]$TailMs = 200,
+  [int]$SearchHeadMs = 1500,
+  [int]$XfadeMs = 12,
+  [int]$GridSnapWindowMs = 30,
+  [int]$BeatsPerBar = 4
 )
 
 # -------------------- Style presets configuration --------------------
@@ -119,6 +150,25 @@ switch ($Style) {
 # Fallback defaults if still default values
 if ($Bpm -eq 0) { $Bpm = 92 }
 if ($Swing -eq -1.0) { $Swing = 0.16 }
+
+# -------------------- Validate OutputFolder --------------------
+if ($OutputFolder) {
+  # Check if the provided path exists
+  if (-not (Test-Path $OutputFolder)) {
+    Write-Host "❌ ERROR: The specified OutputFolder does not exist: $OutputFolder" -ForegroundColor Red
+    Write-Host "🚨 Please provide a valid folder path." -ForegroundColor Red
+    exit 1
+  }
+
+  # Check if it's actually a directory (not a file)
+  if (-not (Test-Path $OutputFolder -PathType Container)) {
+    Write-Host "❌ ERROR: The specified OutputFolder is not a directory: $OutputFolder" -ForegroundColor Red
+    Write-Host "🚨 Please provide a folder path, not a file path." -ForegroundColor Red
+    exit 1
+  }
+
+  Write-Host "✅ Output folder validated: $OutputFolder" -ForegroundColor Green
+}
 
 # -------------------- Core audio settings --------------------
 $SampleRate = 44100
@@ -175,46 +225,49 @@ function Write-Wav16 {
   $bw = $null
 
   try {
+    # Open file stream for writing binary WAV data
     $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
     $bw = New-Object System.IO.BinaryWriter($fs)
 
-    $byteRate = $SampleRate * 2 * 2 # 16-bit stereo
-    $blockAlign = 2 * 2
+    # Calculate WAV file format parameters
+    $byteRate = $SampleRate * 2 * 2 # 16-bit stereo (2 channels * 2 bytes)
+    $blockAlign = 2 * 2              # Bytes per sample frame
     $dataBytes = $LeftSamples.Length * 2 * 2  # L + R samples * 2 bytes each
-    $riffSize = 36 + $dataBytes
+    $riffSize = 36 + $dataBytes      # Total file size minus 8 bytes
 
-    # RIFF header
+    # Write RIFF header - identifies file as WAVE format
     $bw.Write([System.Text.Encoding]::ASCII.GetBytes("RIFF"))
     $bw.Write([UInt32]$riffSize)
     $bw.Write([System.Text.Encoding]::ASCII.GetBytes("WAVE"))
 
-    # fmt chunk
+    # Write fmt chunk - defines audio format properties
     $bw.Write([System.Text.Encoding]::ASCII.GetBytes("fmt "))
     $bw.Write([UInt32]16)               # PCM chunk size
-    $bw.Write([UInt16]1)                # PCM format
-    $bw.Write([UInt16]$Channels)        # channels (stereo)
-    $bw.Write([UInt32]$SampleRate)      # sample rate
-    $bw.Write([UInt32]$byteRate)        # byte rate
-    $bw.Write([UInt16]$blockAlign)      # block align
-    $bw.Write([UInt16]16)               # bits per sample
+    $bw.Write([UInt16]1)                # PCM format (uncompressed)
+    $bw.Write([UInt16]$Channels)        # Number of channels (stereo = 2)
+    $bw.Write([UInt32]$SampleRate)      # Sample rate in Hz
+    $bw.Write([UInt32]$byteRate)        # Bytes per second
+    $bw.Write([UInt16]$blockAlign)      # Bytes per sample frame
+    $bw.Write([UInt16]16)               # Bits per sample
 
-    # data chunk
+    # Write data chunk header
     $bw.Write([System.Text.Encoding]::ASCII.GetBytes("data"))
     $bw.Write([UInt32]$dataBytes)
 
-    # Interleave L/R samples
+    # Interleave L/R samples and write as 16-bit signed integers
     for ($i = 0; $i -lt $LeftSamples.Length; $i++) {
-      # Left sample
+      # Process left sample: clamp to [-1, 1] and convert to 16-bit integer
       $vL = [Math]::Max(-1.0, [Math]::Min(1.0, $LeftSamples[$i])) # hard clip
       $i16L = [int][Math]::Round($vL * 32767.0)
       $bw.Write([Int16]$i16L)
 
-      # Right sample
+      # Process right sample: clamp to [-1, 1] and convert to 16-bit integer
       $vR = [Math]::Max(-1.0, [Math]::Min(1.0, $RightSamples[$i])) # hard clip
       $i16R = [int][Math]::Round($vR * 32767.0)
       $bw.Write([Int16]$i16R)
     }
 
+    # Ensure all data is written to disk
     $bw.Flush()
   }
   catch {
@@ -230,8 +283,281 @@ function Write-Wav16 {
       try { $fs.Dispose() } catch { }
     }
   }
-}# -------------------- DSP helpers --------------------
+}
+
+# -------------------- Seamless Loop Processing Functions --------------------
+
+function Convert-MsToSamples {
+  param([int]$Ms, [int]$SampleRate)
+  # Convert milliseconds to sample count at given sample rate
+  [int][math]::Round(($Ms * $SampleRate) / 1000.0)
+}
+
+
+function Remove-DCOffset([single[]]$x) {
+  # Calculate mean value of the signal
+  $sum = 0.0
+  for ($i=0; $i -lt $x.Length; $i++) { $sum += $x[$i] }
+  $mean = [single]($sum / [math]::Max(1,$x.Length))
+
+  # Subtract mean from each sample to center around zero
+  for ($i=0; $i -lt $x.Length; $i++) { $x[$i] = [single]($x[$i] - $mean) }
+  return $x
+}
+
+
+function Convert-ToMono {
+  param([single[]]$Interleaved, [int]$Channels)
+
+  # If already mono, just return a copy
+  if ($Channels -le 1) { return [single[]]$Interleaved.Clone() }
+
+  # Calculate number of audio frames
+  $frames = [int]($Interleaved.Length / $Channels)
+  $mono = New-Object 'System.Single[]' $frames
+  $idx = 0
+
+  # Average all channels into single mono channel
+  for ($f=0; $f -lt $frames; $f++) {
+    $sum = 0.0
+    for ($c=0; $c -lt $Channels; $c++) { $sum += $Interleaved[$idx + $c] }
+    $mono[$f] = [single]($sum / $Channels)
+    $idx += $Channels
+  }
+
+  return $mono
+}
+
+
+function Get-BestOffsetByNCCF {
+  param([single[]]$Mono, [int]$TailLen, [int]$SearchLen)
+
+  # Extract tail portion from end of audio
+  $N = $Mono.Length
+  $tailStart = $N - $TailLen
+  if ($tailStart -lt 0) { throw "Audio too short for tailLen=$TailLen" }
+
+  $tail = New-Object 'System.Single[]' $TailLen
+  [array]::Copy($Mono, $tailStart, $tail, 0, $TailLen)
+
+  # Calculate normalization factor for tail (RMS)
+  $tailNorm = 0.0
+  for ($i=0; $i -lt $TailLen; $i++) { $tailNorm += $tail[$i]*$tail[$i] }
+  $tailNorm = [math]::Sqrt($tailNorm) + 1e-12
+
+  # Search for best match using normalized cross-correlation
+  $maxOffset = [math]::Min($SearchLen, $N - $TailLen - 1)
+  $best = [double]::NegativeInfinity
+  $bestOff = 0
+
+  for ($off=0; $off -lt $maxOffset; $off++) {
+    # Calculate correlation coefficient at this offset
+    $dot = 0.0; $headNorm = 0.0
+    for ($i=0; $i -lt $TailLen; $i++) {
+      $hv = $Mono[$off + $i]
+      $tv = $tail[$i]
+      $dot += $hv * $tv
+      $headNorm += $hv * $hv
+    }
+
+    # Normalized cross-correlation function (NCCF)
+    $nccf = $dot / ([math]::Sqrt($headNorm) * $tailNorm + 1e-12)
+
+    # Track the best correlation
+    if ($nccf -gt $best) { $best = $nccf; $bestOff = $off }
+  }
+
+  return $bestOff
+}
+
+
+function Get-ZeroCrossingSnap {
+  param([single[]]$X, [int]$Idx, [int]$Window)
+
+  # Define search window around target index
+  $start = [math]::Max(1, $Idx - $Window)
+  $end   = [math]::Min($X.Length - 2, $Idx + $Window)
+  $best = $Idx
+  $bestScore = [single]::PositiveInfinity
+
+  # Determine expected crossing direction from target location
+  $left  = $X[[math]::Max(0, $Idx - 1)]
+  $right = $X[[math]::Min($X.Length - 1, $Idx + 1)]
+  $targetSign = [math]::Sign($right - $left)
+  if ($targetSign -eq 0) { $targetSign = 1 }
+
+  # Search for zero crossings within window
+  for ($i=$start; $i -le $end; $i++) {
+    $a = $X[$i-1]; $b = $X[$i]
+
+    # Check if this is a zero crossing point
+    if ( ($a -le 0 -and $b -gt 0) -or ($a -ge 0 -and $b -lt 0) ) {
+      # Calculate slope direction
+      $sign = [math]::Sign($X[$i+1] - $X[$i-1])
+
+      # Penalize wrong slope direction
+      $slopePenalty = if ($sign -eq 0) { 1 } elseif ($sign -eq $targetSign) { 0 } else { 2 }
+
+      # Penalize high magnitude crossings (prefer closer to actual zero)
+      $magPenalty = [math]::Abs($a) + [math]::Abs($b)
+
+      # Calculate total score (lower is better)
+      $score = [single]($slopePenalty * 10 + $magPenalty)
+
+      if ($score -lt $bestScore) { $bestScore = $score; $best = $i }
+    }
+  }
+
+  return $best
+}
+
+function Invoke-SeamCrossfadeCircular {
+  param(
+    [single[]]$Interleaved, [int]$Channels,
+    [int]$LoopStartFrame, [int]$LoopLengthFrames, [int]$XfadeFrames
+  )
+
+  $totalFrames = [int]($Interleaved.Length / $Channels)
+  if ($XfadeFrames -le 0) { return $Interleaved }
+  if ($XfadeFrames * 2 -ge $LoopLengthFrames) { throw "Xfade too long for loop length." }
+
+  # Calculate loop end position
+  $loopEndFrame = $LoopStartFrame + $LoopLengthFrames
+
+  # Apply equal-power crossfade between loop tail and head
+  for ($n=0; $n -lt $XfadeFrames; $n++) {
+    # Calculate crossfade position (0 to 1)
+    $t = ($n + 0.5) / $XfadeFrames
+
+    # Equal-power crossfade curves
+    $gainA = [math]::Cos($t * [math]::PI / 2.0)  # tail: 1 -> 0
+    $gainB = [math]::Sin($t * [math]::PI / 2.0)  # head: 0 -> 1
+
+    # Calculate frame indices with circular wrapping
+    $tailFrame = ($loopEndFrame - $XfadeFrames + $n) % $totalFrames
+    if ($tailFrame -lt 0) { $tailFrame += $totalFrames }
+    $headFrame = ($LoopStartFrame + $n) % $totalFrames
+
+    # Apply crossfade to all channels
+    for ($c=0; $c -lt $Channels; $c++) {
+      $ti = $tailFrame * $Channels + $c
+      $hi = $headFrame * $Channels + $c
+      # Blend tail and head samples using crossfade curves
+      $Interleaved[$hi] = [single]($Interleaved[$ti] * $gainA + $Interleaved[$hi] * $gainB)
+    }
+  }
+
+  return $Interleaved
+}
+
+
+function Copy-CircularSegment {
+  param([single[]]$Interleaved, [int]$Channels, [int]$StartFrame, [int]$LengthFrames)
+
+  $totalFrames = [int]($Interleaved.Length / $Channels)
+  $out = New-Object 'System.Single[]' ($LengthFrames * $Channels)
+
+  # Copy samples with circular buffer logic
+  for ($n=0; $n -lt $LengthFrames; $n++) {
+    # Calculate source frame with wrap-around
+    $srcFrame = ($StartFrame + $n) % $totalFrames
+    $srcIdx = $srcFrame * $Channels
+    $dstIdx = $n * $Channels
+
+    # Copy all channels for this frame
+    [array]::Copy($Interleaved, $srcIdx, $out, $dstIdx, $Channels)
+  }
+
+  return $out
+}
+
+function Invoke-SeamlessLoop {
+  param(
+    [double[]]$LeftChannel,
+    [double[]]$RightChannel,
+    [int]$SampleRate,
+    [double]$Bpm,
+    [int]$Bars,
+    [int]$BeatsPerBar,
+    [int]$TailMs,
+    [int]$SearchHeadMs,
+    [int]$XfadeMs,
+    [int]$GridSnapWindowMs
+  )
+
+  Write-Host "`n🔁 APPLYING SEAMLESS LOOP PROCESSING..." -ForegroundColor Cyan
+
+  # Convert stereo to interleaved single precision for processing
+  $frames = $LeftChannel.Length
+  $interleaved = New-Object 'System.Single[]' ($frames * 2)
+  for ($i=0; $i -lt $frames; $i++) {
+    $interleaved[$i * 2]     = [single]$LeftChannel[$i]
+    $interleaved[$i * 2 + 1] = [single]$RightChannel[$i]
+  }
+
+  # Create mono mix for analysis
+  $mono = Convert-ToMono -Interleaved $interleaved -Channels 2
+  $mono = Remove-DCOffset $mono
+
+  # Calculate parameters
+  $tailLen   = [math]::Clamp((Convert-MsToSamples -Ms $TailMs -SampleRate $SampleRate), 1024, [math]::Min([int]($mono.Length/2), $SampleRate))
+  $searchLen = [math]::Clamp((Convert-MsToSamples -Ms $SearchHeadMs -SampleRate $SampleRate), 1024, [math]::Min($mono.Length - $tailLen - 1, $SampleRate * 10))
+
+  Write-Host "  🔍 Searching for optimal loop point..." -ForegroundColor Yellow
+
+  # Find loop start using cross-correlation
+  $bestOffset = Get-BestOffsetByNCCF -Mono $mono -TailLen $tailLen -SearchLen $searchLen
+
+  # Beat grid alignment
+  $samplesPerBeat = [double]$SampleRate * 60.0 / $Bpm
+  $snappedStart = $bestOffset
+  $nearestBeatIdx = [int]([math]::Round($snappedStart / $samplesPerBeat) * $samplesPerBeat)
+  $gridWin = Convert-MsToSamples -Ms $GridSnapWindowMs -SampleRate $SampleRate
+
+  if ([math]::Abs($nearestBeatIdx - $snappedStart) -le $gridWin) {
+    # Grid snap to beat boundary, then zero crossing
+    $snappedStart = Get-ZeroCrossingSnap -X $mono -Idx $nearestBeatIdx -Window $gridWin
+    Write-Host "  🎵 Snapped to beat grid at $snappedStart samples" -ForegroundColor Cyan
+  } else {
+    # Just zero crossing snap without beat alignment
+    $snappedStart = Get-ZeroCrossingSnap -X $mono -Idx $bestOffset -Window (Convert-MsToSamples -Ms 8 -SampleRate $SampleRate)
+    Write-Host "  ⚠️  Loop point outside grid snap window, using correlation result" -ForegroundColor Yellow
+  }
+
+  # Calculate exact N-bar target length
+  $targetFrames = [int][math]::Round($Bars * $BeatsPerBar * $samplesPerBeat)
+  $xfade = Convert-MsToSamples -Ms $XfadeMs -SampleRate $SampleRate
+  if ($xfade -ge [int]($targetFrames/2)) { $xfade = [int]([math]::Max(1, [int]($targetFrames/2) - 1)) }
+
+  Write-Host "  ✂️  Loop start: $snappedStart | Target length: $targetFrames frames | Crossfade: $xfade samples" -ForegroundColor Green
+  Write-Host "  📏 Exact loop duration: $Bars bars at $Bpm BPM ($([math]::Round($targetFrames / $SampleRate, 2)) seconds)" -ForegroundColor Green
+
+  # Apply circular boundary crossfade
+  $null = Invoke-SeamCrossfadeCircular -Interleaved $interleaved -Channels 2 -LoopStartFrame $snappedStart -LoopLengthFrames $targetFrames -XfadeFrames $xfade
+
+  # Extract the exact N-bar loop segment (circular copy)
+  $loopSegment = Copy-CircularSegment -Interleaved $interleaved -Channels 2 -StartFrame $snappedStart -LengthFrames $targetFrames
+
+  # Convert back to double stereo arrays
+  $loopFrames = [int]($loopSegment.Length / 2)
+  $newLeft = New-Object 'System.Double[]' $loopFrames
+  $newRight = New-Object 'System.Double[]' $loopFrames
+  for ($i=0; $i -lt $loopFrames; $i++) {
+    $newLeft[$i]  = [double]$loopSegment[$i * 2]
+    $newRight[$i] = [double]$loopSegment[$i * 2 + 1]
+  }
+
+  Write-Host "  ✅ Seamless loop processing complete!" -ForegroundColor Green
+
+  return @{
+    Left = $newLeft
+    Right = $newRight
+  }
+}
+
+# -------------------- DSP helpers --------------------
 $rand = New-Object System.Random
+
 
 function Add-MixInto {
   param(
@@ -240,11 +566,16 @@ function Add-MixInto {
     [int]$StartIndex,
     [double]$Gain = 1.0
   )
+
+  # Calculate how many samples we can safely mix
   $n = [Math]::Min($Src.Length, [Math]::Max(0, $Dest.Length - $StartIndex))
+
+  # Add source samples into destination buffer with gain applied
   for ($i = 0; $i -lt $n; $i++) {
     $Dest[$StartIndex + $i] += $Src[$i] * $Gain
   }
 }
+
 
 # -------------------- Stereo mixing functions --------------------
 function Add-MixIntoStereo {
@@ -253,11 +584,16 @@ function Add-MixIntoStereo {
     [double[]]$Src, [int]$StartIndex,
     [double]$Gain = 1.0, [double]$Pan = 0.0
   )
-  # Equal-power panning: -1 = hard left, 0 = center, +1 = hard right
-  $pl = [Math]::Sqrt(0.5 * (1 - $Pan))
-  $pr = [Math]::Sqrt(0.5 * (1 + $Pan))
 
+  # Calculate equal-power panning coefficients
+  # Pan range: -1 (hard left) to 0 (center) to +1 (hard right)
+  $pl = [Math]::Sqrt(0.5 * (1 - $Pan))  # Left channel gain
+  $pr = [Math]::Sqrt(0.5 * (1 + $Pan))  # Right channel gain
+
+  # Calculate safe mix length
   $n = [Math]::Min($Src.Length, [Math]::Max(0, $L.Length - $StartIndex))
+
+  # Mix source into stereo channels with panning applied
   for ($i = 0; $i -lt $n; $i++) {
     $idx = $StartIndex + $i
     if ($idx -ge $L.Length) { break }
@@ -273,13 +609,16 @@ function Add-HaasStereo {
     [double[]]$Src, [int]$StartIndex,
     [double]$Gain = 1.0, [double]$Pan = 0.0, [double]$HaasMs = 9
   )
+
+  # Convert delay time from milliseconds to samples
   $haas = [int]($HaasMs / 1000.0 * $SampleRate)
 
   for ($i = 0; $i -lt $Src.Length; $i++) {
     $idx = $StartIndex + $i
     if ($idx -ge $L.Length) { break }
 
-    # Left on-time, right delayed (or vice versa based on pan)
+    # Apply Haas effect: one channel on-time, other delayed
+    # Creates stereo width through precedence effect
     if ($Pan -le 0) {
       # Pan left: left on-time, right delayed
       $L[$idx] += $Gain * $Src[$i]
@@ -295,21 +634,29 @@ function Add-HaasStereo {
   }
 }
 
+
 # Stereo slapback send for space
 function Add-SlapbackStereo {
   param([double[]]$L, [double[]]$R, [double[]]$Src, [int]$Start, [double]$Ms = 85, [double]$Gain = 0.18, [double]$Pan = 0.0)
+
+  # Convert delay time from milliseconds to samples
   $d = [int]($Ms / 1000.0 * $SampleRate)
+
+  # Calculate panning for slapback (mirror image of dry signal)
   $pl = [Math]::Sqrt(0.5 * (1 - $Pan))
   $pr = [Math]::Sqrt(0.5 * (1 + $Pan))
 
+  # Add delayed signal with reversed pan for stereo width
   for ($i = 0; $i -lt $Src.Length; $i++) {
     $idx = $Start + $d + $i
     if ($idx -ge $L.Length) { break }
-    # Mirror-ish: send more to the opposite side of the dry
+
+    # Send more to opposite side of dry signal for width
     $L[$idx] += $Gain * $pr * $Src[$i]
     $R[$idx] += $Gain * $pl * $Src[$i]
   }
 }
+
 
 # Pan wobble for shakers (simulates hand movement)
 function Add-WobblePan {
@@ -318,17 +665,25 @@ function Add-WobblePan {
     [double[]]$Src, [int]$StartIndex,
     [double]$Gain = 1.0, [double]$BasePan = 0.0, [double]$Depth = 0.08, [double]$RateHz = 0.35
   )
+
+  # Random starting phase for natural variation
   $randomPhase = Get-Random -Minimum 0.0 -Maximum 6.28
 
+  # Apply time-varying panning that wobbles around base position
   for ($i = 0; $i -lt $Src.Length; $i++) {
     $t = ($i / $SampleRate)
+
+    # Calculate current pan position using sine wave modulation
     $pan = $BasePan + $Depth * [Math]::Sin(2 * [Math]::PI * $RateHz * $t + $randomPhase)
 
-    # Equal-power panning per sample
+    # Equal-power panning calculated per sample for smooth movement
     $pl = [Math]::Sqrt(0.5 * (1 - $pan))
     $pr = [Math]::Sqrt(0.5 * (1 + $pan))
+
     $idx = $StartIndex + $i
     if ($idx -ge $L.Length) { break }
+
+    # Apply wobbling pan position
     $L[$idx] += $Gain * $pl * $Src[$i]
     $R[$idx] += $Gain * $pr * $Src[$i]
   }
@@ -336,151 +691,233 @@ function Add-WobblePan {
 
 function Set-NormalizedLevel {
   param([double[]]$Samples, [double]$Target = 0.95)
+
+  # Find peak absolute value in the signal
   $max = 0.0
-  foreach ($s in $Samples) { $a = [Math]::Abs($s); if ($a -gt $max) { $max = $a } }
+  foreach ($s in $Samples) {
+    $a = [Math]::Abs($s)
+    if ($a -gt $max) { $max = $a }
+  }
+
+  # Apply normalization gain if signal has content
   if ($max -gt 0) {
     $g = $Target / $max
     for ($i = 0; $i -lt $Samples.Length; $i++) { $Samples[$i] *= $g }
   }
 }
 
+
 # Simple one-pole highpass (difference) for noise brightening
 function Set-HighpassFilter {
   param([double[]]$x, [double]$alpha = 0.98)
+
   $y = New-Object double[] $x.Length
   $prev = 0.0
+
+  # Apply first-order highpass filter (y[n] = alpha * y[n-1] + x[n] - x[n-1])
   for ($i = 0; $i -lt $x.Length; $i++) {
     $y[$i] = $alpha * ($y[[Math]::Max(0, $i - 1)]) + $x[$i] - $prev
     $prev = $x[$i]
   }
+
   return , $y
 }
+
 
 # Exponential decay envelope
 function New-ExponentialEnvelope {
   param([int]$Len, [double]$tau) # tau in seconds
+
   $env = New-Object double[] $Len
+
+  # Generate exponential decay curve: amplitude = e^(-t/tau)
   for ($i = 0; $i -lt $Len; $i++) {
     $t = $i / $SampleRate
     $env[$i] = [Math]::Exp(-$t / $tau)
   }
+
   return , $env
 }
 
-# Multiply arrays
+
+# Multiply arrays element-wise
 function Invoke-ArrayMultiply {
   param([double[]]$a, [double[]]$b)
+
   $n = [Math]::Min($a.Length, $b.Length)
   $out = New-Object double[] $n
+
+  # Multiply corresponding elements
   for ($i = 0; $i -lt $n; $i++) { $out[$i] = $a[$i] * $b[$i] }
+
   return , $out
 }
 
 # -------------------- Drum Synths --------------------
 function New-SynthKick {
   param([double]$LengthSec = 0.25, [double]$f0 = 120, [double]$f1 = 40)
+
   $len = [int]($LengthSec * $SampleRate)
   $out = New-Object double[] $len
   $phase = 0.0
+
+  # Generate kick with exponential frequency sweep from f0 to f1
   for ($i = 0; $i -lt $len; $i++) {
     $t = $i / $SampleRate
-    # exponential freq sweep f(t) = f1 + (f0 - f1)*exp(-t*k)
-    $k = 8.0
+
+    # Exponential freq sweep: f(t) = f1 + (f0 - f1)*exp(-t*k)
+    $k = 8.0  # Decay rate for frequency sweep
     $f = $f1 + ($f0 - $f1) * [Math]::Exp(-$k * $t)
+
+    # Accumulate phase and generate sine wave
     $phase += (2.0 * [Math]::PI * $f) / $SampleRate
     $out[$i] = [Math]::Sin($phase)
   }
-  # amplitude envelope: quick thump
+
+  # Apply amplitude envelope for kick punch
   $env = New-ExponentialEnvelope -Len $len -tau 0.12
   $out = Invoke-ArrayMultiply $out $env
-  # subtle saturation
+
+  # Apply subtle saturation for warmth and body
   for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(2.5 * $out[$i]) }
+
   return , $out
 }
 
+
 function New-SynthSnare {
   param([double]$LengthSec = 0.25)
+
   $len = [int]($LengthSec * $SampleRate)
   $tone = New-Object double[] $len
   $noise = New-Object double[] $len
   $phase = 0.0
-  $f = 190.0
+  $f = 190.0  # Snare fundamental frequency
+
+  # Generate tonal component (snare shell resonance)
   for ($i = 0; $i -lt $len; $i++) {
     $phase += (2.0 * [Math]::PI * $f) / $SampleRate
     $tone[$i] = [Math]::Sin($phase)
+
+    # Generate white noise component (snare wire rattle)
     $noise[$i] = ($rand.NextDouble() * 2.0 - 1.0)
   }
-  $toneEnv = New-ExponentialEnvelope -Len $len -tau 0.08
-  $noiseEnv = New-ExponentialEnvelope -Len $len -tau 0.05
+
+  # Apply separate envelopes to tone and noise
+  $toneEnv = New-ExponentialEnvelope -Len $len -tau 0.08   # Shorter tone decay
+  $noiseEnv = New-ExponentialEnvelope -Len $len -tau 0.05  # Quick noise burst
   $tone = Invoke-ArrayMultiply $tone  $toneEnv
   $noise = Invoke-ArrayMultiply $noise $noiseEnv
+
+  # Brighten noise with highpass filter
   $noise = Set-HighpassFilter $noise 0.995
+
+  # Mix tone and noise components
   $out = New-Object double[] $len
   for ($i = 0; $i -lt $len; $i++) { $out[$i] = 0.4 * $tone[$i] + 0.9 * $noise[$i] }
+
+  # Apply saturation for snare crack
   for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(2.0 * $out[$i]) }
+
   return , $out
 }
+
 
 function New-SynthHat {
   param([double]$LengthSec = 0.12)
+
   $len = [int]($LengthSec * $SampleRate)
   $noise = New-Object double[] $len
+
+  # Generate white noise as basis for hi-hat
   for ($i = 0; $i -lt $len; $i++) { $noise[$i] = ($rand.NextDouble() * 2.0 - 1.0) }
+
+  # Apply aggressive highpass to create metallic character
   $noise = Set-HighpassFilter $noise 0.995
+
+  # Apply quick decay envelope for closed hat
   $env = New-ExponentialEnvelope -Len $len -tau 0.03
   $out = Invoke-ArrayMultiply $noise $env
+
+  # Subtle saturation for presence
   for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(1.6 * $out[$i]) }
+
   return , $out
 }
 
+
 function New-SynthOpenHat {
   param([double]$LengthSec = 0.30)
+
   $len = [int]($LengthSec * $SampleRate)
   $noise = New-Object double[] $len
+
+  # Generate white noise as basis
   for ($i = 0; $i -lt $len; $i++) { $noise[$i] = ($rand.NextDouble() * 2.0 - 1.0) }
-  $noise = Set-HighpassFilter $noise 0.997  # Even brighter than closed hat
-  $env = New-ExponentialEnvelope -Len $len -tau 0.12  # Longer sustain for open sound
+
+  # Apply even brighter filtering than closed hat
+  $noise = Set-HighpassFilter $noise 0.997
+
+  # Apply longer decay envelope for open hat sustain
+  $env = New-ExponentialEnvelope -Len $len -tau 0.12
   $out = Invoke-ArrayMultiply $noise $env
+
+  # Gentle saturation to maintain airy quality
   for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(1.4 * $out[$i]) }
+
   return , $out
 }
 
 function New-SynthClap {
   param([double]$LengthSec = 0.35)
-  # 3 quick noise bursts spaced ~15ms for a classic clap smear
+
+  # Create classic handclap with 3 quick noise bursts spaced ~15ms
   $base = New-SynthSnare -LengthSec $LengthSec
   $len = $base.Length
   $burst = New-Object double[] $len
-  $delSamp = [int](0.015 * $SampleRate)
+  $delSamp = [int](0.015 * $SampleRate)  # 15ms spacing between bursts
+
+  # Generate bright noise burst
   $noiseBurst = New-Object double[] $len
   for ($i = 0; $i -lt $len; $i++) { $noiseBurst[$i] = ($rand.NextDouble() * 2 - 1.0) }
   $noiseBurst = Set-HighpassFilter $noiseBurst 0.997
+
+  # Apply decay envelope to burst
   $env = New-ExponentialEnvelope -Len $len -tau 0.06
   $noiseBurst = Invoke-ArrayMultiply $noiseBurst $env
 
-  Add-MixInto -Dest $burst -Src $noiseBurst -StartIndex 0     -Gain 0.9
+  # Layer three bursts at different delays with decreasing gain
+  Add-MixInto -Dest $burst -Src $noiseBurst -StartIndex 0           -Gain 0.9
   Add-MixInto -Dest $burst -Src $noiseBurst -StartIndex $delSamp     -Gain 0.6
   Add-MixInto -Dest $burst -Src $noiseBurst -StartIndex (2 * $delSamp) -Gain 0.4
 
+  # Mix and apply saturation for clap character
   $out = New-Object double[] $len
   for ($i = 0; $i -lt $len; $i++) { $out[$i] = 0.6 * $burst[$i] }
   for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(1.8 * $out[$i]) }
+
   return , $out
 }
 
+
 function New-SynthShaker {
   param([double]$LenSec = 0.12)
+
   $len = [int]($LenSec * $SampleRate)
   $out = New-Object double[] $len
   $rand = New-Object System.Random
 
   for ($i = 0; $i -lt $len; $i++) {
-    # white noise burst
+    # Generate white noise burst
     $n = 2 * $rand.NextDouble() - 1
-    # band-pass effect (shakers live around 2–8kHz)
+
+    # Apply simple band-pass effect (shakers live in 2–8kHz range)
     $bp = $n - 0.98 * $(if ($i -gt 0) { $out[$i - 1] } else { 0 })
-    # envelope (fast in, medium out)
+
+    # Apply envelope: fast attack, medium decay
     $env = [Math]::Exp(-15.0 * ($i / $SampleRate))
+
+    # Apply saturation for texture
     $out[$i] = [Math]::Tanh(1.6 * $bp * $env)
   }
 
@@ -490,55 +927,69 @@ function New-SynthShaker {
 # -------------------- New Instruments --------------------
 function New-SynthBass {
   param([double]$LengthSec = 0.5, [double]$frequency = 80)
+
   $len = [int]($LengthSec * $SampleRate)
   $out = New-Object double[] $len
   $phase = 0.0
 
   for ($i = 0; $i -lt $len; $i++) {
     $t = $i / $SampleRate
-    # Sub bass with slight frequency modulation for warmth
+
+    # Add slight vibrato for warmth and movement
     $vibrato = 1.0 + 0.02 * [Math]::Sin(6.0 * 2.0 * [Math]::PI * $t)
     $currentFreq = $frequency * $vibrato
     $phase += (2.0 * [Math]::PI * $currentFreq) / $SampleRate
 
-    # Square wave with low-pass filtering for warmth
+    # Generate square wave for bass body
     $square = if ([Math]::Sin($phase) -gt 0) { 1.0 } else { -1.0 }
-    # Add sub harmonic
+
+    # Add sub harmonic for depth
     $sub = 0.3 * [Math]::Sin($phase * 0.5)
+
     $out[$i] = 0.7 * $square + $sub
   }
 
-  # Apply envelope - longer sustain for bass
+  # Apply envelope for note shaping
   $env = New-ExponentialEnvelope -Len $len -tau 0.25
   $out = Invoke-ArrayMultiply $out $env
 
-  # Soft saturation
+  # Apply soft saturation for analog warmth
   for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(1.5 * $out[$i]) }
+
   return , $out
 }
 
+
 function New-Synth808 {
   param([double]$LenSec = 0.6, [double]$f0 = 48, [double]$Drive = 1.3)
+
   $len = [int]($LenSec * $SampleRate)
   $out = New-Object double[] $len
   $phase = 0.0
 
   for ($i = 0; $i -lt $len; $i++) {
     $t = $i / $SampleRate
-    # Quick down-chirp: punch then settle to fundamental
+
+    # Quick down-chirp: initial punch then settle to fundamental
     $f = $f0 + 22.0 * [Math]::Exp(-20.0 * $t)
     $phase += (2.0 * [Math]::PI * $f) / $SampleRate
-    $env = [Math]::Exp(-2.2 * $t)  # Long but decaying envelope
+
+    # Long but decaying envelope for 808 boom
+    $env = [Math]::Exp(-2.2 * $t)
+
     $out[$i] = $env * [Math]::Sin($phase)
   }
 
-  # Heavy saturation for that 808 character
+  # Apply heavy saturation for that classic 808 character
   for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh($Drive * $out[$i]) }
+
   return , $out
 }
 
+
 function New-SynthBrass {
   param([double]$LengthSec = 0.15, [double]$frequency = 220)
+
   $len = [int]($LengthSec * $SampleRate)
   $out = New-Object double[] $len
   $phase = 0.0
@@ -546,127 +997,159 @@ function New-SynthBrass {
   for ($i = 0; $i -lt $len; $i++) {
     $phase += (2.0 * [Math]::PI * $frequency) / $SampleRate
 
-    # Sawtooth wave with harmonics for brass-like sound
+    # Generate sawtooth wave using harmonic series for brass timbre
     $saw = 0.0
     for ($h = 1; $h -le 8; $h++) {
       $harmonic = [Math]::Sin($phase * $h) / $h
       $saw += $harmonic
     }
+
     $out[$i] = $saw * 0.3
   }
 
-  # Sharp attack, quick decay envelope
+  # Apply sharp attack, quick decay envelope for brass stab
   $env = New-ExponentialEnvelope -Len $len -tau 0.08
-  # Add attack punch
+
+  # Add extra punch to attack
   for ($i = 0; $i -lt [Math]::Min(100, $len); $i++) {
     $env[$i] *= (1.0 + 2.0 * [Math]::Exp(-$i * 0.05))
   }
+
   $out = Invoke-ArrayMultiply $out $env
 
-  # Hard saturation for punch
+  # Apply hard saturation for punch and presence
   for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(3.0 * $out[$i]) }
+
   return , $out
 }
 
 function New-SynthScratch {
   param([double]$LengthSec = 0.2)
+
   $len = [int]($LengthSec * $SampleRate)
   $out = New-Object double[] $len
 
-  # Create scratch by modulating noise with a quick frequency sweep
+  # Create scratch effect using noise modulated by frequency sweep
   for ($i = 0; $i -lt $len; $i++) {
     $t = $i / $SampleRate
+
+    # Generate white noise base
     $noise = ($rand.NextDouble() * 2.0 - 1.0)
 
-    # Frequency modulation for scratch effect
+    # Frequency modulation creates the "scratch" sweep effect
     $scratchFreq = 200.0 + 800.0 * [Math]::Sin(15.0 * 2.0 * [Math]::PI * $t)
     $phase = $scratchFreq * $t * 2.0 * [Math]::PI
     $carrier = [Math]::Sin($phase)
 
+    # Modulate noise with carrier wave
     $out[$i] = $noise * $carrier * 0.8
   }
 
-  # Highpass to make it scratchy
+  # Apply highpass to enhance scratchy character
   $out = Set-HighpassFilter $out 0.97
 
-  # Quick envelope
+  # Apply quick envelope for sharp attack
   $env = New-ExponentialEnvelope -Len $len -tau 0.04
   $out = Invoke-ArrayMultiply $out $env
 
-  # Heavy saturation for gritty sound
+  # Apply heavy saturation for gritty turntable sound
   for ($i = 0; $i -lt $len; $i++) { $out[$i] = [Math]::Tanh(4.0 * $out[$i]) }
+
   return , $out
 }
+
 
 # Additional scratch variation with crossfader gate effect
 function New-SynthScratchWicky {
   param([double]$LenSec = 0.25)
+
   $len = [int]($LenSec * $SampleRate)
   $out = New-Object double[] $len
   $rand = New-Object System.Random
   $phase = 0.0
+
   for ($i = 0; $i -lt $len; $i++) {
     $t = $i / $SampleRate
-    # varispeed sweep up then down
+
+    # Generate varispeed sweep effect (up then down)
     $f = (600 + 1800 * [Math]::Sin(2 * [Math]::PI * 3.0 * $t))
     $phase += (2 * [Math]::PI * $f) / $SampleRate
-    # tone+noise mix
+
+    # Mix tone and noise for texture
     $tone = 0.5 * [Math]::Sin($phase)
     $noi = 0.5 * (2 * $rand.NextDouble() - 1)
     $sig = $tone + $noi
-    # crossfader gate (square LFO ~ 12 Hz)
+
+    # Crossfader gate effect (square LFO ~ 12 Hz creates stuttering)
     $gate = if (([Math]::Sin(2 * [Math]::PI * 12.0 * $t) -ge 0)) { 1.0 } else { 0.0 }
+
+    # Apply decay envelope
     $env = [Math]::Exp(-3.2 * $t)
+
     $out[$i] = [Math]::Tanh(1.6 * $sig * $gate * $env)
   }
+
   , $out
 }
+
 
 # Chirp scratch - quick high-to-low frequency sweep
 function New-SynthScratchChirp {
   param([double]$LenSec = 0.18)
+
   $len = [int]($LenSec * $SampleRate)
   $out = New-Object double[] $len
   $phase = 0.0
 
   for ($i = 0; $i -lt $len; $i++) {
     $t = $i / $SampleRate
-    # Exponential frequency sweep from high to low
+
+    # Exponential frequency sweep from high to low (chirp down)
     $f = 2000 * [Math]::Exp(-8.0 * $t) + 100
     $phase += (2 * [Math]::PI * $f) / $SampleRate
 
-    # Mix of tone and filtered noise
+    # Mix tone with filtered noise for realism
     $tone = [Math]::Sin($phase)
     $noise = (2 * $rand.NextDouble() - 1) * 0.3
     $sig = $tone + $noise
 
-    # Sharp attack, quick decay
+    # Apply sharp attack, quick decay for chirp character
     $env = [Math]::Exp(-12.0 * $t)
+
     $out[$i] = [Math]::Tanh(2.0 * $sig * $env)
   }
+
   , $out
 }
+
 
 # Reverse scratch - low-to-high sweep with stutter
 function New-SynthScratchReverse {
   param([double]$LenSec = 0.22)
+
   $len = [int]($LenSec * $SampleRate)
   $out = New-Object double[] $len
   $phase = 0.0
 
   for ($i = 0; $i -lt $len; $i++) {
     $t = $i / $SampleRate
-    # Rising frequency with wobble
+
+    # Rising frequency sweep with wobble for movement
     $f = 150 + 1200 * $t + 300 * [Math]::Sin(2 * [Math]::PI * 8.0 * $t)
     $phase += (2 * [Math]::PI * $f) / $SampleRate
 
-    # Stutter gate effect
+    # Apply stutter gate effect for rhythmic variation
     $stutter = if (([Math]::Sin(2 * [Math]::PI * 20.0 * $t) -gt -0.3)) { 1.0 } else { 0.2 }
+
+    # Mix tone with noise
     $sig = [Math]::Sin($phase) + 0.2 * (2 * $rand.NextDouble() - 1)
 
+    # Apply envelope
     $env = [Math]::Exp(-4.0 * $t)
+
     $out[$i] = [Math]::Tanh(1.8 * $sig * $stutter * $env)
   }
+
   , $out
 }
 
@@ -1098,14 +1581,40 @@ if ($maxPeak -gt 0) {
   Write-Host "✨ Normalized to 95% peak with gain of $([Math]::Round($normGain, 3))" -ForegroundColor Green
 }
 
-# Output path
-if (-not $OutPath) {
-  $name = "HipHopBeat_${Style}_${Bpm}bpm_${Bars}bars_stereo.wav"
+# Apply seamless loop processing (default behavior, unless disabled)
+if (-not $DontMakeSeamless) {
+  try {
+    $loopResult = Invoke-SeamlessLoop `
+      -LeftChannel $mixL `
+      -RightChannel $mixR `
+      -SampleRate $SampleRate `
+      -Bpm $Bpm `
+      -Bars $Bars `
+      -BeatsPerBar $BeatsPerBar `
+      -TailMs $TailMs `
+      -SearchHeadMs $SearchHeadMs `
+      -XfadeMs $XfadeMs `
+      -GridSnapWindowMs $GridSnapWindowMs
+    $mixL = $loopResult.Left
+    $mixR = $loopResult.Right
+  }
+  catch {
+    Write-Host "⚠️ Warning: Seamless loop processing failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host "   Continuing with original audio..." -ForegroundColor Yellow
+  }
+}
+
+# Output path - use automatic naming system
+$loopSuffix = if (-not $DontMakeSeamless) { "_loop" } else { "" }
+$name = "HipHopBeat_${Style}_${Bpm}bpm_${Bars}bars_stereo${loopSuffix}.wav"
+
+if (-not $OutputFolder) {
+  # Use temp folder if no output folder specified
   $OutPath = Join-Path $env:TEMP $name
 }
 else {
-  # Extract filename from provided path
-  $name = Split-Path $OutPath -Leaf
+  # Use provided folder with auto-generated filename
+  $OutPath = Join-Path $OutputFolder $name
 }
 
 Write-Host "`n💾 BOUNCING TO WAV..." -ForegroundColor Cyan

@@ -1,6 +1,9 @@
 # 🎛️ Make‑HipHopBeat.ps1 — Boom‑Bap in a Box
-
-> **Self‑contained, sample‑free hip‑hop beat generator for Windows (PowerShell).**
+| `-Bpm` | `int` (60–180) | style default | Set `0` to use the style's tempo. |
+| `-Bars` | `int` (1–64) | `4` | Total bars to render. |
+| `-Swing` | `double` (0.0–0.25) | style default | 0.12–0.18 = pocket sweet spot. |
+| `-OutputFolder` | `string` | temp folder | Folder where WAV is saved (auto-named). Validated on startup. |
+| `-AddClap` | `switch` | off | Layer clap with snare. |*Self‑contained, sample‑free hip‑hop beat generator for Windows (PowerShell).**
 > Pure DSP math (sine, noise, envelopes), 16‑step sequencing, swing, and a touch of console swagger. Exports a 44.1kHz/16‑bit WAV and can play it back automatically. No VSTs, no downloads, no internet — **just your PC and PowerShell.**
 
 ---
@@ -10,7 +13,8 @@
 - **Real groove:** 16‑step grid with **swing** (0–0.25). Defaults per style for that “head‑nod” feel.
 - **Stereo sauce:** Equal‑power panning, Haas widening, slapback on snares, light saturation, then a gentle master limiter & normalization.
 - **Style presets:** `BoomBap`, `OldSchool`, `Crunk` — each with distinct BPM, swing, instrument mix, and pattern flavor.
-- **Hands‑off render:** Writes a temp WAV by default (or your chosen `-OutPath`) and plays it back.
+- **Seamless loops by default:** Built-in beat-aligned loop processing using cross-correlation and zero-crossing detection for perfect, click-free loops.
+- **Hands‑off render:** Writes a temp WAV by default (or to your chosen `-OutputFolder`) and plays it back. Filenames are auto-generated based on beat parameters.
 
 > 🧪 **Under the hood:** You’ll see amplitude envelopes, noise bursts for snare, FM-ish wobble for scratches, randomized pattern variations, and subtle bus processing — all in PowerShell.
 
@@ -25,14 +29,16 @@ Unblock-File .\Make-HipHopBeat.ps1
 # Fire up a classic 90s groove:
 .\Make-HipHopBeat.ps1 -Style BoomBap -Bars 4
 
-# Save to a WAV (and auto‑play it):
-.\Make-HipHopBeat.ps1 -Style OldSchool -Bars 8 -OutPath .\mybeat.wav
+# Save to a specific folder (auto-generated filename):
+.\Make-HipHopBeat.ps1 -Style OldSchool -Bars 8 -OutputFolder C:\Music\Beats
 ```
 
 ### Requirements
 - Windows 10/11
 - PowerShell 5.1 or 7+
 - A working audio device (for playback)
+
+> By default, all beats are processed into seamless loops. Use `-DontMakeSeamless` to skip loop processing.
 
 > If you only want the file and **no auto‑play**, just keep the generated `.wav` and stop the player with `Ctrl+C` if needed.
 
@@ -53,6 +59,15 @@ Unblock-File .\Make-HipHopBeat.ps1
 | `-AddScratch` | `switch` | off | Turntablism‑flavored FX. |
 | `-AddShaker` | `switch` | off | Extra texture on the top end. |
 | `-UseAll` | `switch` | off | YOLO: enable **all** extras at once. |
+| `-SkipPlayback` | `switch` | off | Don't auto-play, just save the file. |
+| `-DontMakeSeamless` | `switch` | off | Disable seamless loop processing (loops are ON by default). |
+| `-TailMs` | `int` | `200` | Tail window for loop detection (150–300ms typical). |
+| `-SearchHeadMs` | `int` | `1500` | Search range for loop point (1000–2000ms typical). |
+| `-XfadeMs` | `int` | `12` | Crossfade duration (8–20ms, lower for drums). |
+| `-GridSnapWindowMs` | `int` | `30` | Max distance to nudge loop to beat boundary. |
+| `-BeatsPerBar` | `int` | `4` | Time signature (4 for 4/4, 3 for 3/4, etc.). |
+
+> **Note:** Seamless loops are **enabled by default**. All loop parameters (TailMs, SearchHeadMs, etc.) are used unless you specify `-DontMakeSeamless`.
 
 > Switches **override** style defaults. `-UseAll` wins over everything.
 
@@ -93,6 +108,26 @@ Each preset sets up: instrument selection, panning, delays, variation density, a
 .\Make-HipHopBeat.ps1 -Style BoomBap -Bpm 88 -Swing 0.18 -Bars 16 -AddClap -AddBass -AddShaker
 ```
 
+**Perfect seamless loop for game/app background:**
+```powershell
+.\Make-HipHopBeat.ps1 -Style BoomBap -Bars 4 -SkipPlayback
+```
+
+**Crunk loop with custom crossfade and beat-grid alignment:**
+```powershell
+.\Make-HipHopBeat.ps1 -Style Crunk -Use808 -XfadeMs 15 -GridSnapWindowMs 50
+```
+
+**Exact 8-bar loop with custom time signature:**
+```powershell
+.\Make-HipHopBeat.ps1 -Bars 8 -BeatsPerBar 4 -Bpm 96
+```
+
+**Non-looping beat (classic behavior):**
+```powershell
+.\Make-HipHopBeat.ps1 -DontMakeSeamless -Style BoomBap -Bars 4
+```
+
 ---
 
 ## 🧠 “Scholarly” nods (authentic feel)
@@ -100,14 +135,17 @@ Each preset sets up: instrument selection, panning, delays, variation density, a
 - **Backbeat on 2 & 4**, with hats running steady (plus occasional extra 16ths).
 - **Micro‑variation** maps per 16‑step block to avoid robotic repetition.
 - **Panning discipline**: kick/bass center, hats and shakers split, claps slightly alternating, subtle Haas width.
+- **Beat-aligned seamless loops**: Cross-correlation finds the best loop point, snaps to beat grid, then applies zero-crossing and equal-power crossfade.
 - **Gentle bus saturation** then **normalize** for consistent loudness without crushing the transients.
 
 ---
 
 ## 🛠️ Troubleshooting
-- **No sound?** Make sure your Windows audio device is set and not in exclusive use. Try saving `-OutPath .\test.wav` and play it in a media player.
+- **No sound?** Make sure your Windows audio device is set and not in exclusive use. Try saving with `-OutputFolder .` and play the generated WAV in a media player.
 - **Execution policy blocks it?** Run `Unblock-File` or start the shell with a policy that allows local scripts.
+- **Invalid folder error?** The `-OutputFolder` parameter validates that the folder exists and is a directory. Create the folder first or omit the parameter to use the temp folder.
 - **Glitches on playback?** Rendering is offline (clean), but playback uses `System.Media.SoundPlayer`. If it stutters, just open the WAV in your DAW/player.
+- **Don't want seamless loops?** Use `-DontMakeSeamless` to get the original non-looping behavior.
 
 ---
 
