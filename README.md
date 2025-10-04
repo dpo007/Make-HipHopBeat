@@ -1,9 +1,5 @@
 # 🎛️ Make‑HipHopBeat.ps1 — Boom‑Bap in a Box
-| `-Bpm` | `int` (60–180) | style default | Set `0` to use the style's tempo. |
-| `-Bars` | `int` (1–64) | `4` | Total bars to render. |
-| `-Swing` | `double` (0.0–0.25) | style default | 0.12–0.18 = pocket sweet spot. |
-| `-OutputFolder` | `string` | temp folder | Folder where WAV is saved (auto-named). Validated on startup. |
-| `-AddClap` | `switch` | off | Layer clap with snare. |*Self‑contained, sample‑free hip‑hop beat generator for Windows (PowerShell).**
+
 > Pure DSP math (sine, noise, envelopes), 16‑step sequencing, swing, and a touch of console swagger. Exports a 44.1kHz/16‑bit WAV and can play it back automatically. No VSTs, no downloads, no internet — **just your PC and PowerShell.**
 
 ---
@@ -37,10 +33,6 @@ Unblock-File .\Make-HipHopBeat.ps1
 - Windows 10/11
 - PowerShell 5.1 or 7+
 - A working audio device (for playback)
-
-> By default, all beats are processed into seamless loops. Use `-DontMakeSeamless` to skip loop processing.
-
-> If you only want the file and **no auto‑play**, just keep the generated `.wav` and stop the player with `Ctrl+C` if needed.
 
 ---
 
